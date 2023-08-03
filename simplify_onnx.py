@@ -283,7 +283,7 @@ def merge_slice(model: onnx.ModelProto) -> onnx.ModelProto:
                 inputs=[node.input[0]],
                 outputs=[parent_node["node"].output[0] for parent_node in slice_nodes],
                 axis=axis,
-                splits=splits,
+                split=splits,
             )
         else:
             split_param = onnx.helper.make_tensor(
