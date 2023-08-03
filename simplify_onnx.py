@@ -8,6 +8,50 @@ import streamlit as st
 from easydict import EasyDict
 
 
+def replace_input_name(model: onnx.ModelProto) -> onnx.ModelProto:
+    """将ONNX模型中的第一个输入名称替换为input
+
+    Args:
+        model (onnx.ModelProto): 需要进行操作的ONNX模型
+
+    Returns:
+        onnx.ModelProto: 替换后的ONNX模型
+    """
+    model = onnx.load_model_from_string(model.SerializeToString())
+
+    old_name = model.graph.input[0].name
+    model.graph.input[0].name = "input"
+    # 遍历所有的节点，将输入名称为old_name的节点的输入名称替换为input
+    for node in model.graph.node:
+        for i in range(len(node.input)):
+            if node.input[i] == old_name:
+                node.input[i] = "input"
+
+    return model
+
+
+def replace_output_name(model: onnx.ModelProto) -> onnx.ModelProto:
+    """将ONNX模型中的第一个输出名称替换为output
+
+    Args:
+        model (onnx.ModelProto): 需要进行操作的ONNX模型
+
+    Returns:
+        onnx.ModelProto: 替换后的ONNX模型
+    """
+    model = onnx.load_model_from_string(model.SerializeToString())
+
+    old_name = model.graph.output[0].name
+    model.graph.output[0].name = "output"
+    # 遍历所有的节点，将输出名称为old_name的节点的输出名称替换为output
+    for node in model.graph.node:
+        for i in range(len(node.output)):
+            if node.output[i] == old_name:
+                node.output[i] = "output"
+
+    return model
+
+
 def simplify(model: onnx.ModelProto) -> onnx.ModelProto:
     """
     简化ONNX模型，去除无用的节点和参数
@@ -412,6 +456,8 @@ def main():
     onnx_file = st.file_uploader("Choose an ONNX file", type="onnx")
     if "modifiers" not in st.session_state:
         st.session_state.modifiers = [
+            replace_input_name,
+            replace_output_name,
             simplify,
             modify_reshape,
             replace_squeeze_and_unsqueeze,
@@ -420,6 +466,8 @@ def main():
             simplify,
         ]
     for modifier in [
+        "replace_input_name",
+        "replace_output_name",
         "simplify",
         "modify_reshape",
         "replace_squeeze_and_unsqueeze",
