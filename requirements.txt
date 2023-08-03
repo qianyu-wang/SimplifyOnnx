@@ -1,0 +1,6 @@
+onnx
+onnx-simplifier
+onnxruntime
+numpy
+streamlit
+easydict
