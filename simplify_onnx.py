@@ -71,6 +71,85 @@ def simplify(model: onnx.ModelProto) -> onnx.ModelProto:
     return model_sim
 
 
+def fuse_conv_and_bn(model: onnx.ModelProto) -> onnx.ModelProto:
+    """将ONNX模型中连续的Conv和BN节点合并为一个Conv节点
+
+    Args:
+        model (onnx.ModelProto): 需要重新编排的ONNX模型
+
+    Returns:
+        onnx.ModelProto: 重新编排后的ONNX模型
+    """
+    # 复制一份模型，防止修改原模型
+    model = onnx.load_model_from_string(model.SerializeToString())
+
+    # 寻找并处理连续的Conv和BN
+    node_name_to_node = {}
+    for node in model.graph.node:
+        node_name_to_node[node.name] = node
+
+    tensor_name_to_tensor = {}
+    for tensor in model.graph.initializer:
+        tensor_name_to_tensor[tensor.name] = onnx.numpy_helper.to_array(tensor)
+
+    new_nodes = []
+    for node in model.graph.node:
+        # 如果节点是BN并且前面的节点是Conv
+        if node.op_type == "BatchNormalization" and node_name_to_node[node.input[0]].op_type == "Conv":
+            # 取出Conv和BN的参数
+            conv_node = node_name_to_node[node.input[0]]
+            bn_node = node
+
+            conv_weight = tensor_name_to_tensor[conv_node.input[1]]
+            if len(conv_node.input) == 3:
+                conv_bias = tensor_name_to_tensor[conv_node.input[2]]
+            else:
+                conv_bias = np.zeros(conv_weight.shape[0], dtype=np.float32)
+
+            bn_scale = tensor_name_to_tensor[bn_node.input[1]]
+            bn_bias = tensor_name_to_tensor[bn_node.input[2]]
+            bn_mean = tensor_name_to_tensor[bn_node.input[3]]
+            bn_var = tensor_name_to_tensor[bn_node.input[4]]
+            eps = bn_node.attribute[0].f
+
+            # 计算新的Conv的参数
+            std = np.sqrt(bn_var + eps)
+            t = bn_scale / std
+            new_weight = conv_weight * t.reshape((-1, 1, 1, 1))
+            new_bias = bn_scale * (conv_bias - bn_mean) / std + bn_bias
+
+            # 更新Conv的参数
+            conv_node.input[1] = bn_node.name + "_new_weight"
+            tensor_name_to_tensor[conv_node.input[1]] = new_weight
+            model.graph.initializer.append(onnx.numpy_helper.from_array(new_weight, bn_node.name + "_new_weight"))
+            if len(conv_node.input) == 3:
+                tensor_name_to_tensor[conv_node.input[2]] = new_bias
+            else:
+                conv_node.input.append(bn_node.name + "_new_bias")
+                tensor_name_to_tensor[bn_node.name + "_new_bias"] = new_bias
+            model.graph.initializer.append(onnx.numpy_helper.from_array(new_bias, bn_node.name + "_new_bias"))
+
+            conv_node.output[0] = bn_node.output[0]
+            new_nodes.append(conv_node)
+        else:
+            if node.op_type != "BatchNormalization" or node_name_to_node[node.input[0]].op_type != "Conv":
+                new_nodes.append(node)
+
+    # 创建一个新的图
+    new_graph = onnx.helper.make_graph(
+        new_nodes,
+        model.graph.name,
+        model.graph.input,
+        model.graph.output,
+        model.graph.initializer,
+    )
+
+    # 替换原始的图
+    model.graph.CopyFrom(new_graph)
+
+    return model
+
+
 def modify_reshape(model: onnx.ModelProto) -> onnx.ModelProto:
     """
     重新编排ONNX模型中的Reshape节点，使得batch维度为-1，其它维度为固定值。
