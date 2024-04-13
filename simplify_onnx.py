@@ -95,7 +95,10 @@ def fuse_conv_and_bn(model: onnx.ModelProto) -> onnx.ModelProto:
     new_nodes = []
     for node in model.graph.node:
         # 如果节点是BN并且前面的节点是Conv
-        if node.op_type == "BatchNormalization" and node_name_to_node[node.input[0]].op_type == "Conv":
+        if (
+            node.op_type == "BatchNormalization"
+            and node_name_to_node[node.input[0]].op_type == "Conv"
+        ):
             # 取出Conv和BN的参数
             conv_node = node_name_to_node[node.input[0]]
             bn_node = node
@@ -121,18 +124,25 @@ def fuse_conv_and_bn(model: onnx.ModelProto) -> onnx.ModelProto:
             # 更新Conv的参数
             conv_node.input[1] = bn_node.name + "_new_weight"
             tensor_name_to_tensor[conv_node.input[1]] = new_weight
-            model.graph.initializer.append(onnx.numpy_helper.from_array(new_weight, bn_node.name + "_new_weight"))
+            model.graph.initializer.append(
+                onnx.numpy_helper.from_array(new_weight, bn_node.name + "_new_weight")
+            )
             if len(conv_node.input) == 3:
                 tensor_name_to_tensor[conv_node.input[2]] = new_bias
             else:
                 conv_node.input.append(bn_node.name + "_new_bias")
                 tensor_name_to_tensor[bn_node.name + "_new_bias"] = new_bias
-            model.graph.initializer.append(onnx.numpy_helper.from_array(new_bias, bn_node.name + "_new_bias"))
+            model.graph.initializer.append(
+                onnx.numpy_helper.from_array(new_bias, bn_node.name + "_new_bias")
+            )
 
             conv_node.output[0] = bn_node.output[0]
             new_nodes.append(conv_node)
         else:
-            if node.op_type != "BatchNormalization" or node_name_to_node[node.input[0]].op_type != "Conv":
+            if (
+                node.op_type != "BatchNormalization"
+                or node_name_to_node[node.input[0]].op_type != "Conv"
+            ):
                 new_nodes.append(node)
 
     # 创建一个新的图
@@ -217,6 +227,58 @@ def modify_reshape(model: onnx.ModelProto) -> onnx.ModelProto:
         if initializer in model.graph.initializer:
             model.graph.initializer.remove(initializer)
         model.graph.initializer.append(new_tensor)
+    return model
+
+
+def resolve_reduce_mean_axis(model: onnx.ModelProto) -> onnx.ModelProto:
+    """替换reduce_mean中的axis，把负数维度替换成实际维度
+
+    Args:
+        model (onnx.ModelProto): ONNX模型
+
+    Returns:
+        onnx.ModelProto: 替换维度后的ONNX模型
+    """
+    model = onnx.load_model_from_string(model.SerializeToString())
+
+    # 运行模型，获取每个Reshape节点的输出维度
+    temp_model = onnx.load_model_from_string(model.SerializeToString())
+    node_names = []
+    for node in temp_model.graph.node:
+        if node.op_type in ["ReduceMean"]:
+            temp_model.graph.output.extend(
+                [
+                    onnx.helper.make_tensor_value_info(
+                        node.input[0], onnx.TensorProto.FLOAT, [None]
+                    )
+                ]
+            )
+            node_names.append(node.input[0])
+    input_name = temp_model.graph.input[0].name
+    input_shape = [
+        dim.dim_value for dim in temp_model.graph.input[0].type.tensor_type.shape.dim
+    ]
+    input_data = np.random.random_sample(input_shape).astype(np.float32)
+    sess = onnxruntime.InferenceSession(
+        temp_model.SerializeToString(),
+        providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+    )
+    outputs = sess.run(node_names, {input_name: input_data})
+    reduce_mean_dims = dict(zip(node_names, [output.shape for output in outputs]))
+
+    # 遍历所有的节点
+    for node in model.graph.node:
+        # 如果节点是ReduceMean操作
+        if node.op_type != "ReduceMean":
+            continue
+        for attribute in node.attribute:
+            if attribute.name == "axes":
+                new_axes = []
+                for axis in attribute.ints:
+                    if axis < 0:
+                        axis = len(reduce_mean_dims[node.input[0]]) + axis
+                    new_axes.append(axis)
+                attribute.ints[:] = new_axes
     return model
 
 
@@ -509,6 +571,20 @@ def reshape_output(model: onnx.ModelProto) -> onnx.ModelProto:
     return model
 
 
+def simplify_name(model: onnx.ModelProto) -> onnx.ModelProto:
+    """
+    简化ONNX模型中的节点名称，移除节点名称中的/和.，同时保证节点输入输出一致
+    """
+    model = onnx.load_model_from_string(model.SerializeToString())
+    for node in model.graph.node:
+        node.name = node.name.replace("/", "_").replace(".", "_")
+        for i in range(len(node.input)):
+            node.input[i] = node.input[i].replace("/", "-").replace(".", "_")
+        for i in range(len(node.output)):
+            node.output[i] = node.output[i].replace("/", "-").replace(".", "_")
+    return model
+
+
 def process(args):
     onnx_model = onnx.load(args.onnx_file)
     for fn in args.modifiers:
@@ -535,26 +611,30 @@ def main():
     onnx_file = st.file_uploader("Choose an ONNX file", type="onnx")
     if "modifiers" not in st.session_state:
         st.session_state.modifiers = [
-            replace_input_name,
-            replace_output_name,
-            simplify,
-            modify_reshape,
-            replace_squeeze_and_unsqueeze,
-            merge_slice,
-            reshape_output,
-            simplify,
         ]
-    for modifier in [
+    modifiers = [
         "replace_input_name",
         "replace_output_name",
         "simplify",
         "modify_reshape",
         "replace_squeeze_and_unsqueeze",
+        "resolve_reduce_mean_axis",
         "merge_slice",
         "reshape_output",
+        "simplify_name",
+        "simplify",
+    ]
+    for modifier in [
+        *modifiers,
+        "All",
     ]:
         if st.button(f"Add {modifier}"):
-            st.session_state.modifiers.append(eval(modifier))
+            if modifier == "All":
+                st.session_state.modifiers = [
+                    eval(modifier) for modifier in modifiers
+                ]
+            else:
+                st.session_state.modifiers.append(eval(modifier))
     st.write("Steps:", list(map(lambda x: x.__name__, st.session_state.modifiers)))
     if st.button("Clear modifiers"):
         st.session_state.modifiers = []

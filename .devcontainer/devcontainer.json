@@ -1,0 +1,65 @@
+{
+    "image": "mcr.microsoft.com/devcontainers/base:jammy",
+    "features": {
+        "ghcr.io/rocker-org/devcontainer-features/miniforge:1": {
+            "version": "latest",
+            "variant": "Miniforge3"
+        },
+        "ghcr.io/devcontainers-community/features/llvm:3": {}
+    },
+    "containerEnv": {
+        "PIP_ROOT_USER_ACTION": "ignore"
+    },
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.python",
+                "ms-toolsai.jupyter",
+                "ms-python.isort",
+                "076923.python-image-preview",
+                "njqdev.vscode-python-typehint",
+                "seanwu.vscode-qt-for-python",
+                "ms-python.black-formatter",
+                "ms-python.flake8",
+                "njpwerner.autodocstring",
+
+                "aaron-bond.better-comments",
+                "mhutchie.git-graph",
+                "donjayamanne.githistory",
+                "huizhou.githd",
+                "GitHub.copilot",
+                "GitHub.copilot-chat",
+                "GitHub.copilot-labs",
+                "GitHub.vscode-pull-request-github",
+                "github.vscode-github-actions",
+                "codezombiech.gitignore",
+                "VisualStudioExptTeam.vscodeintellicode",
+                "VisualStudioExptTeam.intellicode-api-usage-examples",
+                "bennycode.sort-everything",
+                "redhat.vscode-yaml",
+                "redhat.vscode-xml",
+                "DotJoshJohnson.xml",
+                "tamasfe.even-better-toml",
+                "cweijan.vscode-typora",
+                "christian-kohler.path-intellisense"
+            ],
+            "settings": {
+                "python.defaultInterpreterPath": "/opt/conda/envs/${localWorkspaceFolderBasename}/bin/python",
+                "python.terminal.activateEnvInCurrentTerminal": true,
+                "python.terminal.activateEnvironment": true
+            }
+        }
+    },
+    "mounts": [
+        "source=${localWorkspaceFolder},target=/workspace/${localWorkspaceFolderBasename},type=bind",
+        "source=python-dev-envs,target=/opt/conda/envs,type=volume"
+    ],
+    "name": "Python 3",
+    "postCreateCommand": "bash .devcontainer/setup.sh",
+    "remoteUser": "root",
+    "runArgs": [
+        "--gpus",
+        "all"
+    ],
+    "workspaceFolder": "/workspace/${localWorkspaceFolderBasename}"
+}
