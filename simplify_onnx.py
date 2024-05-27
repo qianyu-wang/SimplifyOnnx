@@ -241,7 +241,7 @@ def modify_reshape(model: onnx.ModelProto) -> onnx.ModelProto:
                     new_shape[0] = -1
                     # 更新形状的值
                     new_tensor = onnx.numpy_helper.from_array(
-                        new_shape, name=f"{node.name}/shape"
+                        new_shape, name=f"{node.name}_shape"
                     )
                     # 替换原始的初始化器
                     to_replace_initializers.append((initializer, new_tensor))
@@ -302,6 +302,7 @@ def replace_squeeze_and_unsqueeze(model: onnx.ModelProto) -> onnx.ModelProto:
         # 如果节点是Squeeze或Unsqueeze操作
         if node.op_type in ["Squeeze", "Unsqueeze"]:
             new_shape = reshape_dims[node.output[0]]
+            new_shape[0] = -1
             reshape_param = onnx.helper.make_tensor(
                 name=f"{node.name}_reshape_param",
                 data_type=onnx.TensorProto.INT64,
@@ -616,13 +617,13 @@ def main():
         "replace_input_name",
         "replace_output_name",
         "simplify",
+        "simplify_name",
         "modify_reshape",
         "replace_squeeze_and_unsqueeze",
         "resolve_reduce_mean_axis",
         "merge_slice",
         "reshape_output",
-        "simplify_name",
-        "simplify",
+        "add_reshape_after_matmul",
     ]
     for modifier in [
         *modifiers,
