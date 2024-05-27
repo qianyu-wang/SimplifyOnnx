@@ -6,7 +6,7 @@
     "configurations": [
         {
             "name": "run",
-            "type": "python",
+            "type": "debugpy",
             "request": "launch",
             "module": "streamlit",
             "args": [

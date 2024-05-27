@@ -1,11 +1,57 @@
 from pathlib import Path
+from typing import Dict, List
 
 import numpy as np
 import onnx
-import onnxsim
 import onnxruntime
+import onnxsim
 import streamlit as st
 from easydict import EasyDict
+
+
+def infer_shapes(
+    model: onnx.ModelProto, ops: List[str] = tuple(), names: List[str] = tuple()
+) -> Dict[str, List[int]]:
+    """
+    推断ONNX模型中指定类型算子的输出维度
+
+    Args:
+        model (onnx.ModelProto): ONNX模型
+        ops (List[str], optional): 需要推断的算子类型. Defaults to None.
+        names (List[str], optional): 需要推断的节点名称. Defaults to None.
+
+    Returns:
+        Dict[str, List[int]]: 节点名称到输出维度的映射
+    """
+    model = onnx.load_model_from_string(model.SerializeToString())
+    output_names = []
+    for node in model.graph.node:
+        if node.op_type in ops or node.name in names:
+            if node.name not in model.graph.output:
+                model.graph.output.extend(
+                    [
+                        onnx.helper.make_tensor_value_info(
+                            node.output[0], onnx.TensorProto.FLOAT, [None]
+                        )
+                    ]
+                )
+            output_names.append(node.output[0])
+
+    inputs = {
+        input_node.name: np.random.random_sample(
+            [dim.dim_value for dim in input_node.type.tensor_type.shape.dim]
+        ).astype(np.float32)
+        for input_node in model.graph.input
+    }
+    sess = onnxruntime.InferenceSession(
+        model.SerializeToString(),
+        providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+    )
+    outputs = sess.run(output_names, inputs)
+    node_to_shape = {
+        output_name: list(output.shape) for output, output_name in zip(outputs, output_names)
+    }
+    return node_to_shape
 
 
 def replace_input_name(model: onnx.ModelProto) -> onnx.ModelProto:
@@ -173,30 +219,7 @@ def modify_reshape(model: onnx.ModelProto) -> onnx.ModelProto:
     # 复制一份模型，防止修改原模型
     model = onnx.load_model_from_string(model.SerializeToString())
 
-    # 运行模型，获取每个Reshape节点的输出维度
-    temp_model = onnx.load_model_from_string(model.SerializeToString())
-    reshape_names = []
-    for node in temp_model.graph.node:
-        if node.op_type == "Reshape":
-            temp_model.graph.output.extend(
-                [
-                    onnx.helper.make_tensor_value_info(
-                        node.output[0], onnx.TensorProto.FLOAT, [None]
-                    )
-                ]
-            )
-            reshape_names.append(node.output[0])
-    input_name = temp_model.graph.input[0].name
-    input_shape = [
-        dim.dim_value for dim in temp_model.graph.input[0].type.tensor_type.shape.dim
-    ]
-    input_data = np.random.random_sample(input_shape).astype(np.float32)
-    sess = onnxruntime.InferenceSession(
-        temp_model.SerializeToString(),
-        providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
-    )
-    outputs = sess.run(reshape_names, {input_name: input_data})
-    reshape_dims = dict(zip(reshape_names, [output.shape for output in outputs]))
+    reshape_dims = infer_shapes(model, ops=["Reshape"])
 
     to_replace_initializers = []
 
@@ -241,30 +264,7 @@ def resolve_reduce_mean_axis(model: onnx.ModelProto) -> onnx.ModelProto:
     """
     model = onnx.load_model_from_string(model.SerializeToString())
 
-    # 运行模型，获取每个Reshape节点的输出维度
-    temp_model = onnx.load_model_from_string(model.SerializeToString())
-    node_names = []
-    for node in temp_model.graph.node:
-        if node.op_type in ["ReduceMean"]:
-            temp_model.graph.output.extend(
-                [
-                    onnx.helper.make_tensor_value_info(
-                        node.input[0], onnx.TensorProto.FLOAT, [None]
-                    )
-                ]
-            )
-            node_names.append(node.input[0])
-    input_name = temp_model.graph.input[0].name
-    input_shape = [
-        dim.dim_value for dim in temp_model.graph.input[0].type.tensor_type.shape.dim
-    ]
-    input_data = np.random.random_sample(input_shape).astype(np.float32)
-    sess = onnxruntime.InferenceSession(
-        temp_model.SerializeToString(),
-        providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
-    )
-    outputs = sess.run(node_names, {input_name: input_data})
-    reduce_mean_dims = dict(zip(node_names, [output.shape for output in outputs]))
+    reduce_mean_dims = infer_shapes(model, ops=["ReduceMean"])
 
     # 遍历所有的节点
     for node in model.graph.node:
@@ -294,30 +294,7 @@ def replace_squeeze_and_unsqueeze(model: onnx.ModelProto) -> onnx.ModelProto:
     # 复制一份模型，防止修改原模型
     model = onnx.load_model_from_string(model.SerializeToString())
 
-    # 运行模型，获取每个Reshape节点的输出维度
-    temp_model = onnx.load_model_from_string(model.SerializeToString())
-    node_names = []
-    for node in temp_model.graph.node:
-        if node.op_type in ["Squeeze", "Unsqueeze"]:
-            temp_model.graph.output.extend(
-                [
-                    onnx.helper.make_tensor_value_info(
-                        node.output[0], onnx.TensorProto.FLOAT, [None]
-                    )
-                ]
-            )
-            node_names.append(node.output[0])
-    input_name = temp_model.graph.input[0].name
-    input_shape = [
-        dim.dim_value for dim in temp_model.graph.input[0].type.tensor_type.shape.dim
-    ]
-    input_data = np.random.random_sample(input_shape).astype(np.float32)
-    sess = onnxruntime.InferenceSession(
-        temp_model.SerializeToString(),
-        providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
-    )
-    outputs = sess.run(node_names, {input_name: input_data})
-    reshape_dims = dict(zip(node_names, [output.shape for output in outputs]))
+    reshape_dims = infer_shapes(model, ops=["Squeeze", "Unsqueeze"])
 
     new_nodes = []
     # 遍历原始模型的所有节点
@@ -394,28 +371,7 @@ def merge_slice(model: onnx.ModelProto) -> onnx.ModelProto:
         elif node.op_type == "Split":
             pass
 
-    # 获取所有的Slice节点的父节点的输出维度
-    temp_model = onnx.load_model_from_string(model.SerializeToString())
-    output_names = list(slice_dict.keys())
-    for output_name in output_names:
-        temp_model.graph.output.extend(
-            [
-                onnx.helper.make_tensor_value_info(
-                    output_name, onnx.TensorProto.FLOAT, [None]
-                )
-            ]
-        )
-    input_name = temp_model.graph.input[0].name
-    input_shape = [
-        dim.dim_value for dim in temp_model.graph.input[0].type.tensor_type.shape.dim
-    ]
-    input_data = np.random.random_sample(input_shape).astype(np.float32)
-    sess = onnxruntime.InferenceSession(
-        temp_model.SerializeToString(),
-        providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
-    )
-    outputs = sess.run(output_names, {input_name: input_data})
-    output_dims = dict(zip(output_names, [output.shape for output in outputs]))
+    output_dims = infer_shapes(model, names=list(slice_dict.keys()))
 
     # 判断哪些slice操作可以合并
     to_merge = {}
@@ -514,19 +470,9 @@ def reshape_output(model: onnx.ModelProto) -> onnx.ModelProto:
     """
     model = onnx.load_model_from_string(model.SerializeToString())
 
-    # 使用onnxruntime来运行模型，并获取每个输出的维度
-    output_names = [output.name for output in model.graph.output]
-    input_name = model.graph.input[0].name
-    input_shape = [
-        dim.dim_value for dim in model.graph.input[0].type.tensor_type.shape.dim
-    ]
-    input_data = np.random.random_sample(input_shape).astype(np.float32)
-    sess = onnxruntime.InferenceSession(
-        model.SerializeToString(),
-        providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+    output_dims = infer_shapes(
+        model, names=[output.name for output in model.graph.output]
     )
-    outputs = sess.run(output_names, {input_name: input_data})
-    output_dims = dict(zip(output_names, [output.shape for output in outputs]))
 
     output_node_map = {}
     for node in model.graph.node:
@@ -571,21 +517,76 @@ def reshape_output(model: onnx.ModelProto) -> onnx.ModelProto:
     return model
 
 
+def rename(name):
+    if name.startswith("/"):
+        name = name[1:]
+    name = name.replace("/", "_")
+    name = name.replace(":", "_")
+    return name
+
+
 def simplify_name(model: onnx.ModelProto) -> onnx.ModelProto:
     """
-    简化ONNX模型中的节点名称，移除节点名称中的/和.，同时保证节点输入输出一致
+    简化ONNX模型中的节点名称、节点输入输出以及initializers的名称。
+    使用提供的rename函数来格式化名称。
     """
     model = onnx.load_model_from_string(model.SerializeToString())
+
+    # 用来存储原始名称和更改后名称的映射
+    name_map = {}
+
     for node in model.graph.node:
-        node.name = node.name.replace("/", "_").replace(".", "_")
+        node.name = rename(node.name)
         for i in range(len(node.input)):
-            node.input[i] = node.input[i].replace("/", "-").replace(".", "_")
+            original_name = node.input[i]
+            new_name = rename(original_name)
+            node.input[i] = new_name
+            name_map[original_name] = new_name
         for i in range(len(node.output)):
-            node.output[i] = node.output[i].replace("/", "-").replace(".", "_")
+            original_name = node.output[i]
+            new_name = rename(original_name)
+            node.output[i] = new_name
+            name_map[original_name] = new_name
+
+    # 更新initializers的名称
+    for initializer in model.graph.initializer:
+        if initializer.name in name_map:
+            initializer.name = name_map[initializer.name]
+
     return model
 
 
-def process(args):
+def add_reshape_after_matmul(
+    model: onnx.ModelProto
+) -> onnx.ModelProto:
+    model = onnx.load_model_from_string(model.SerializeToString())
+    matmul_dims = infer_shapes(model, ops=["MatMul"])
+    for node in model.graph.node:
+        if node.op_type == "MatMul":
+            output_name = node.output[0]
+            output_shape = matmul_dims[output_name]
+            if len(output_shape) == 4:
+                new_shape = [-1, *output_shape[1:]]
+                temp_output_name = output_name + "_reshape"
+                node.output[0] = temp_output_name
+                reshape_param = onnx.helper.make_tensor(
+                    name=f"{output_name}_reshape_param",
+                    data_type=onnx.TensorProto.INT64,
+                    dims=[len(new_shape)],
+                    vals=new_shape,
+                )
+                reshape_node = onnx.helper.make_node(
+                    "Reshape",
+                    inputs=[temp_output_name, reshape_param.name],
+                    outputs=[output_name],
+                    name=temp_output_name,
+                )
+                model.graph.node.append(reshape_node)
+                model.graph.initializer.append(reshape_param)
+    return model
+
+
+def process(args) -> None:
     onnx_model = onnx.load(args.onnx_file)
     for fn in args.modifiers:
         st.write(f"Applying {fn.__name__}")
@@ -610,8 +611,7 @@ def main():
     st.title("ONNX Modifier")
     onnx_file = st.file_uploader("Choose an ONNX file", type="onnx")
     if "modifiers" not in st.session_state:
-        st.session_state.modifiers = [
-        ]
+        st.session_state.modifiers = []
     modifiers = [
         "replace_input_name",
         "replace_output_name",
@@ -630,9 +630,7 @@ def main():
     ]:
         if st.button(f"Add {modifier}"):
             if modifier == "All":
-                st.session_state.modifiers = [
-                    eval(modifier) for modifier in modifiers
-                ]
+                st.session_state.modifiers = [eval(modifier) for modifier in modifiers]
             else:
                 st.session_state.modifiers.append(eval(modifier))
     st.write("Steps:", list(map(lambda x: x.__name__, st.session_state.modifiers)))
